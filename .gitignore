@@ -1,0 +1,14 @@
+# Neovim
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Lua
+luac.out
+
+# Dependencies
+/lua/jumps/vendor/
