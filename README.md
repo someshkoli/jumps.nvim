@@ -1,7 +1,5 @@
 # jumps.nvim
 
-> **Disclaimer**: This plugin was vibe-coded for personal usage, it works tho, does what readme says.
-
 A Neovim plugin for filtered navigation through your cross-file jumplist. Only shows jumps to different files within your current root directory.
 
 ## Features
@@ -9,7 +7,7 @@ A Neovim plugin for filtered navigation through your cross-file jumplist. Only s
 - Root directory filtering (only shows jumps within `getcwd()`)
 - Cross-file only (filters out same-file jumps)
 - Telescope picker interface
-- Backward/forward navigation through filtered jump history
+- Backward/forward navigation through filtered jump history (beta: implementation is flaky)
 
 ## Requirements
 
@@ -76,9 +74,11 @@ require('jumps').setup({
 
 ```vim
 :Jumps          " Open the cross-file jumplist picker
+:JumpsDebug     " Debug jumplist filtering
+
+# flaky implementations
 :JumpsBack      " Jump backward in filtered history
 :JumpsForward   " Jump forward in filtered history
-:JumpsDebug     " Debug jumplist filtering
 ```
 
 ### Keymaps
@@ -88,4 +88,3 @@ Set keymaps in your configuration, then use them to navigate through your filter
 ## License
 
 Apache License 2.0
-# jumps.nvim

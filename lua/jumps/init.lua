@@ -1,13 +1,9 @@
 local M = {}
 
--- Default configuration
 local default_config = {
-  -- Keymap to open the jump picker (set to nil by default, user must configure)
   keymap = nil,
-  -- Keymaps for navigating filtered jumps (set to nil by default, user must configure)
   keymap_back = nil,
   keymap_forward = nil,
-  -- Telescope picker options
   telescope = {
     layout_strategy = 'horizontal',
     layout_config = {
@@ -17,155 +13,148 @@ local default_config = {
   },
 }
 
--- Plugin state
 local config = {}
-local jump_history_position = 0  -- Current position in filtered jump history
+local jump_history = {}  -- Our own jump history list
+-- [[
+-- {lnum, filepath, col, bufnr}
+-- ]]
+local jump_history_position = -1  -- Current position in our jump history (0 = most recent)
+local jump_history_top = -1  -- Topmost element position in jump history
+local is_navigating = false  -- Flag to prevent recording during navigation
 
--- Check if a filepath is within the current root directory
-local function is_in_root_directory(filepath)
+local function file_in_current_project(filepath)
   local root_dir = vim.fn.getcwd()
 
-  -- Normalize paths to handle symlinks and relative paths
   local normalized_filepath = vim.fn.fnamemodify(filepath, ':p')
   local normalized_root = vim.fn.fnamemodify(root_dir, ':p')
 
-  -- Ensure root directory ends with separator for proper prefix matching
   if not normalized_root:match('/$') then
     normalized_root = normalized_root .. '/'
   end
 
-  -- Check if filepath starts with root directory
   return normalized_filepath:sub(1, #normalized_root) == normalized_root
 end
 
--- Get filtered jumplist with only cross-file jumps
-local function get_filtered_jumplist()
-  local jumplist = vim.fn.getjumplist()
-  local jumps = jumplist[1]
-  local current_pos = jumplist[2]
-  local current_file = vim.fn.expand('%:p')
-
-  local filtered = {}
-  local seen_files = {}
-
-  -- Iterate through jumplist in reverse to get most recent first
-  for i = #jumps, 1, -1 do
-    local jump = jumps[i]
-    local bufnr = jump.bufnr
-
-    -- Skip invalid buffers
-    if vim.api.nvim_buf_is_valid(bufnr) then
-      local filepath = vim.api.nvim_buf_get_name(bufnr)
-
-      -- Only include if it's a different file, we haven't seen it yet, and it's in the root directory
-      if filepath ~= '' and filepath ~= current_file and not seen_files[filepath] and is_in_root_directory(filepath) then
-        seen_files[filepath] = true
-
-        table.insert(filtered, {
-          bufnr = bufnr,
-          filepath = filepath,
-          filename = vim.fn.fnamemodify(filepath, ':t'),
-          lnum = jump.lnum,
-          col = jump.col,
-          -- Store original index for potential future use
-          original_idx = i,
-        })
-      end
+local function history_element_equal(first, second)
+    if first.filepath == second.filepath and
+            first.lnum == second.lnum and
+            first.col == second.col then
+        return true
     end
-  end
 
-  return filtered
+    return false
 end
 
--- Navigate backward in filtered jump history
+local function record_jump(filepath, lnum, col, bufnr)
+    if not file_in_current_project(filepath) then
+        return
+    end
+
+    -- Don't record if this exact location already exists in jump history
+    local new_entry = {filepath = filepath, lnum = lnum, col = col}
+    for _, jump in ipairs(jump_history) do
+        if history_element_equal(new_entry, jump) then
+            return
+        end
+    end
+
+    table.insert(jump_history, {
+        filepath = filepath,
+        lnum = lnum,
+        col = col,
+        bufnr = bufnr,
+        filename = vim.fn.fnamemodify(filepath, ':t')
+    })
+    jump_history_top = jump_history_top + 1
+    jump_history_position = jump_history_position + 1
+end
+
+local function record_branched_jump(filepath, lnum, col, bufnr)
+    if not file_in_current_project(filepath) then
+        return
+    end
+
+    -- ensure branch jump index out of bound
+    if jump_history_top >= #jump_history then
+        vim.api.nvim_echo({{"Error: Branch jump index out of bounds"}}, false, {})
+        return
+    end
+
+
+    jump_history[jump_history_top] = {
+        filepath = filepath,
+        lnum =lnum,
+        col = col,
+        bufnr =bufnr,
+        filename = vim.fn.fnamemodify(filepath, ':t')
+    }
+end
+
+local function set_current_buffer(jump_history_element)
+    vim.api.nvim_set_current_buf(jump_history_element.bufnr)
+    vim.api.nvim_win_set_cursor(0, { jump_history_element.lnum, jump_history_element.col })
+end
+
 function M.jump_back()
-  local jumps = get_filtered_jumplist()
+    if jump_history_position == 0 then
+        vim.api.nvim_echo({{"No further history records available to go backward"}}, false, {})
+        return
+    end
 
-  if #jumps == 0 then
-    vim.notify('No cross-file jumps found in current root directory', vim.log.levels.INFO)
-    return
-  end
+    jump_history_position = jump_history_position - 1
 
-  -- Move position forward (since list is in reverse chronological order)
-  jump_history_position = jump_history_position + 1
+    if jump_history_position < jump_history_top then
+        is_navigating = true
+    else
+        is_navigating = false
+    end
 
-  if jump_history_position > #jumps then
-    jump_history_position = #jumps
-    vim.notify('Already at oldest jump', vim.log.levels.INFO)
-    return
-  end
+    local current_buffer = jump_history[jump_history_position]
 
-  local jump = jumps[jump_history_position]
-  vim.cmd('buffer ' .. jump.bufnr)
-  vim.api.nvim_win_set_cursor(0, { jump.lnum, jump.col })
-  vim.cmd('normal! zz')
-
-  vim.notify(string.format('Jump %d/%d: %s:%d', jump_history_position, #jumps, jump.filename, jump.lnum), vim.log.levels.INFO)
+    set_current_buffer(current_buffer)
 end
 
--- Navigate forward in filtered jump history
 function M.jump_forward()
-  local jumps = get_filtered_jumplist()
+    if jump_history_position >= jump_history_top then
+        vim.api.nvim_echo({{"No further history records available to go forward"}}, false, {})
+        return
+    end
 
-  if #jumps == 0 then
-    vim.notify('No cross-file jumps found in current root directory', vim.log.levels.INFO)
-    return
-  end
+    jump_history_position = jump_history_position + 1
 
-  -- Move position backward (since list is in reverse chronological order)
-  jump_history_position = jump_history_position - 1
+    if jump_history_position < jump_history_top then
+        is_navigating = true
+    else
+        is_navigating = false
+    end
 
-  if jump_history_position < 1 then
-    jump_history_position = 1
-    vim.notify('Already at newest jump', vim.log.levels.INFO)
-    return
-  end
+    local current_buffer = jump_history[jump_history_position]
 
-  local jump = jumps[jump_history_position]
-  vim.cmd('buffer ' .. jump.bufnr)
-  vim.api.nvim_win_set_cursor(0, { jump.lnum, jump.col })
-  vim.cmd('normal! zz')
-
-  vim.notify(string.format('Jump %d/%d: %s:%d', jump_history_position, #jumps, jump.filename, jump.lnum), vim.log.levels.INFO)
+    set_current_buffer(current_buffer)
 end
 
--- Debug function to inspect jumplist
 function M.debug()
-  local jumplist = vim.fn.getjumplist()
-  local jumps = jumplist[1]
-  local current_pos = jumplist[2]
-  local current_file = vim.fn.expand('%:p')
-  local root_dir = vim.fn.getcwd()
-
-  print('=== Jumplist Debug ===')
-  print('Root directory: ' .. root_dir)
-  print('Total jumps: ' .. #jumps)
-  print('Current position: ' .. current_pos)
-  print('Current file: ' .. current_file)
-  print('\nAll jumps:')
-
-  for i, jump in ipairs(jumps) do
-    local bufnr = jump.bufnr
-    local valid = vim.api.nvim_buf_is_valid(bufnr)
-    local filepath = valid and vim.api.nvim_buf_get_name(bufnr) or '<invalid>'
-    local is_current = filepath == current_file
-    local in_root = valid and filepath ~= '' and is_in_root_directory(filepath)
-
-    print(string.format(
-      '[%d] buf:%d valid:%s file:%s same_file:%s in_root:%s lnum:%d col:%d',
-      i, bufnr, tostring(valid), filepath, tostring(is_current), tostring(in_root), jump.lnum, jump.col
-    ))
+  vim.print(string.format("=== Jump History Debug ==="))
+  vim.print(string.format("jump_history_position: %d", jump_history_position))
+  vim.print(string.format("jump_history_top: %d", jump_history_top))
+  vim.print(string.format("is_navigating: %s", is_navigating))
+  vim.print(string.format("jump_history length: %d", #jump_history))
+  vim.print("")
+  vim.print("=== Jump History Contents ===")
+  for i, entry in ipairs(jump_history) do
+    local marker = ""
+    if i == jump_history_position + 1 then
+      marker = " <-- current position"
+    elseif i == jump_history_top + 1 then
+      marker = " <-- top"
+    end
+    vim.print(string.format("[%d] %s:%d:%d (buf:%d)%s",
+      i, entry.filepath, entry.lnum, entry.col, entry.bufnr, marker))
   end
-
-  local filtered = get_filtered_jumplist()
-  print('\n=== Filtered Results ===')
-  print('Cross-file jumps found: ' .. #filtered)
-  for i, entry in ipairs(filtered) do
-    print(string.format('[%d] %s:%d:%d', i, entry.filename, entry.lnum, entry.col))
-  end
+  vim.print("=== End Debug ===")
+  vim.cmd(":messages")
 end
 
--- Open telescope picker with filtered jumplist
 function M.show()
   local has_telescope, telescope = pcall(require, 'telescope')
   if not has_telescope then
@@ -181,17 +170,17 @@ function M.show()
   local entry_display = require('telescope.pickers.entry_display')
   local previewers = require('telescope.previewers')
 
-  local jumps = get_filtered_jumplist()
+  -- Build the display list from our jump history
+  local jumps = jump_history
+  local current_index = 1
+  local added_current_separately = false
 
-  if #jumps == 0 then
-    vim.notify('No cross-file jumps found in current root directory', vim.log.levels.INFO)
-    return
-  end
 
   -- Create displayer for nice formatting
   local displayer = entry_display.create({
     separator = ' ',
     items = {
+      { width = 1 },   -- current marker
       { width = 30 },  -- filename
       { width = 6 },   -- line:col
       { remaining = true },  -- file path
@@ -199,7 +188,11 @@ function M.show()
   })
 
   local make_display = function(entry)
+    local marker = entry.value.is_current and '>' or ' '
+    local marker_hl = entry.value.is_current and 'TelescopeSelectionCaret' or 'TelescopeResultsIdentifier'
+
     return displayer({
+      { marker, marker_hl },
       { entry.value.filename, 'TelescopeResultsIdentifier' },
       { string.format('%d:%d', entry.value.lnum, entry.value.col), 'TelescopeResultsLineNr' },
       { entry.value.filepath, 'TelescopeResultsComment' },
@@ -207,7 +200,8 @@ function M.show()
   end
 
   pickers.new(config.telescope or {}, {
-    prompt_title = 'Cross-File Jumps',
+    prompt_title = 'Jump History',
+    default_selection_index = current_index,
     finder = finders.new_table({
       results = jumps,
       entry_maker = function(entry)
@@ -225,7 +219,6 @@ function M.show()
     previewer = previewers.new_buffer_previewer({
       title = 'Jump Location Preview',
       get_buffer_by_name = function(_, entry)
-        return entry.filename
       end,
       define_preview = function(self, entry, status)
         local bufnr = self.state.bufnr
@@ -281,6 +274,10 @@ function M.show()
     attach_mappings = function(prompt_bufnr, map)
       actions.select_default:replace(function()
         local selection = action_state.get_selected_entry()
+
+        -- Set navigating flag to prevent recording during Telescope jump
+        is_navigating = true
+
         actions.close(prompt_bufnr)
 
         -- Jump to the selected location
@@ -289,6 +286,11 @@ function M.show()
 
         -- Center the view
         vim.cmd('normal! zz')
+
+        -- Reset navigating flag after a brief delay to ensure all autocmds fire
+        vim.schedule(function()
+          is_navigating = false
+        end)
       end)
       return true
     end,
@@ -317,6 +319,11 @@ function M.setup(user_config)
   end, { desc = 'Jump forward in filtered history' })
 
   -- Set up default keymap if provided
+    vim.keymap.set('n', '<leader>rp', ':Lazy reload jumps<CR>', {
+      desc = 'Reload jumps plugin',
+      silent = true,
+    })
+
   if config.keymap then
     vim.keymap.set('n', config.keymap, M.show, {
       desc = 'Open cross-file jumplist',
@@ -338,6 +345,65 @@ function M.setup(user_config)
       silent = true,
     })
   end
+
+  local augroup = vim.api.nvim_create_augroup('JumpsNvim', { clear = true })
+
+  vim.api.nvim_create_autocmd('BufLeave', {
+    group = augroup,
+    callback = function(args)
+        -- Only record file buffers, skip special buffers
+        if vim.bo[args.buf].buftype ~= '' or vim.fn.filereadable(args.file) ~= 1 then
+            return
+        end
+
+        local cursor_pos = vim.api.nvim_win_get_cursor(0)
+        local lnum = cursor_pos[1]
+        local col = cursor_pos[2]
+
+        if #jump_history == 0 and args.file ~= '' then
+            vim.print("left")
+            record_jump(args.file, lnum, col, args.buf)
+        end
+    end,
+  })
+
+  vim.api.nvim_create_autocmd('BufEnter', {
+    group = augroup,
+    callback = function(args)
+        -- Only record file buffers, skip special buffers (terminal, help, quickfix, etc.)
+        if vim.bo[args.buf].buftype ~= '' or vim.fn.filereadable(args.file) ~= 1 then
+            return
+        end
+
+        local cursor_pos = vim.api.nvim_win_get_cursor(0)
+        local lnum = cursor_pos[1]
+        local col = cursor_pos[2]
+        -- local filename = args.file:
+
+        if args.file == '' then
+            return
+        end
+
+        if is_navigating then
+            if not history_element_equal(
+                {filepath = args.file,lnum = lnum, bufnr = args.buf, col = col},
+                -- possible array out of bound exception here, check if jump histor position + 1 is available or not
+                jump_history[jump_history_position + 1]
+            ) then
+                jump_history_top = jump_history_position + 1
+                record_branched_jump(args.file, lnum, col, args.buf)
+                vim.print("left")
+                is_navigating = false
+            end
+            jump_history_position = jump_history_position + 1
+            return
+        end
+
+        -- vim.print("triggered")
+
+        record_jump(args.file, lnum, col, args.buf)
+    end,
+  })
 end
 
 return M
