@@ -36,7 +36,7 @@ local function file_in_current_project(filepath)
 end
 
 local function history_element_equal(first, second)
-    if first.file == second.file and
+    if first.filepath == second.filepath and
             first.lnum == second.lnum and
             first.col == second.col then
         return true
@@ -50,12 +50,20 @@ local function record_jump(filepath, lnum, col, bufnr)
         return
     end
 
+    -- Don't record if this exact location already exists in jump history
+    local new_entry = {filepath = filepath, lnum = lnum, col = col}
+    for _, jump in ipairs(jump_history) do
+        if history_element_equal(new_entry, jump) then
+            return
+        end
+    end
+
     table.insert(jump_history, {
         filepath = filepath,
         lnum = lnum,
         col = col,
         bufnr = bufnr,
-        filename = ""
+        filename = vim.fn.fnamemodify(filepath, ':t')
     })
     jump_history_top = jump_history_top + 1
     jump_history_position = jump_history_position + 1
@@ -78,7 +86,7 @@ local function record_branched_jump(filepath, lnum, col, bufnr)
         lnum =lnum,
         col = col,
         bufnr =bufnr,
-        filename = ""
+        filename = vim.fn.fnamemodify(filepath, ':t')
     }
 end
 
@@ -343,11 +351,17 @@ function M.setup(user_config)
   vim.api.nvim_create_autocmd('BufLeave', {
     group = augroup,
     callback = function(args)
+        -- Only record file buffers, skip special buffers
+        if vim.bo[args.buf].buftype ~= '' or vim.fn.filereadable(args.file) ~= 1 then
+            return
+        end
+
         local cursor_pos = vim.api.nvim_win_get_cursor(0)
         local lnum = cursor_pos[1]
         local col = cursor_pos[2]
 
         if #jump_history == 0 and args.file ~= '' then
+            vim.print("left")
             record_jump(args.file, lnum, col, args.buf)
         end
     end,
@@ -356,6 +370,11 @@ function M.setup(user_config)
   vim.api.nvim_create_autocmd('BufEnter', {
     group = augroup,
     callback = function(args)
+        -- Only record file buffers, skip special buffers (terminal, help, quickfix, etc.)
+        if vim.bo[args.buf].buftype ~= '' or vim.fn.filereadable(args.file) ~= 1 then
+            return
+        end
+
         local cursor_pos = vim.api.nvim_win_get_cursor(0)
         local lnum = cursor_pos[1]
         local col = cursor_pos[2]
@@ -373,13 +392,14 @@ function M.setup(user_config)
             ) then
                 jump_history_top = jump_history_position + 1
                 record_branched_jump(args.file, lnum, col, args.buf)
+                vim.print("left")
                 is_navigating = false
             end
             jump_history_position = jump_history_position + 1
             return
         end
 
-        vim.print("triggered")
+        -- vim.print("triggered")
 
         record_jump(args.file, lnum, col, args.buf)
     end,
