@@ -1,3 +1,5 @@
+# jumps.nvim
+
 A Neovim plugin for filtered navigation through your cross-file jumplist. Only shows jumps to different files within your current root directory.
 
 ## Features
